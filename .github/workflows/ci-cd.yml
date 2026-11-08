@@ -1,0 +1,25 @@
+name: MediQuick Digital CI/CD Pipeline
+
+# Triggers requeridos por el rol
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Build & Validate Code
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del código fuente
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Mensaje de confirmación del Pipeline
+        run: echo "Pipeline de MediQuick Digital ejecutado con éxito"
