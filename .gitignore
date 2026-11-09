@@ -1,0 +1,18 @@
+
+# Dependencias
+node_modules/
+
+# Archivos compilados
+dist/
+
+# Variables de entorno y secretos
+.env
+.env.*
+!.env.example
+
+# Cobertura de pruebas
+coverage/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
