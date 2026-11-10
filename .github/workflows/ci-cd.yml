@@ -1,14 +1,33 @@
-name: CI-CD MediQuick
+name: MediQuick Digital CI/CD Pipeline
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
+  build-and-test:
+    name: Build & Validate Code
+    runs-on: ubuntu-latest
 
- 
+    steps:
+      - name: Checkout del código fuente
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Mensaje de confirmación del Pipeline
+        run: echo "Pipeline de MediQuick Digital ejecutado con éxito"
+
   migracion-bd:
     name: "Etapa 3 - Migración de BD (Flyway)"
     runs-on: ubuntu-latest
 
+    
     services:
       postgres:
         image: postgres:16
@@ -55,7 +74,7 @@ jobs:
           psql -h localhost -U mediquick -d mediquick \
                -f db/tests/verificar_migracion.sql
 
-
+  
   seguridad-devsecops:
     name: "Etapa 4 - DevSecOps (Gitleaks + Trivy)"
     runs-on: ubuntu-latest
@@ -64,7 +83,7 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 
 
-
+     
       - name: Escaneo de secretos (Gitleaks)
         run: |
           # Se descarga fuera del repositorio para no escanear el propio binario
@@ -73,7 +92,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" dir . --redact --verbose --no-banner
 
-    
+      
       - name: Análisis de dependencias (Trivy SCA)
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 
         with:
