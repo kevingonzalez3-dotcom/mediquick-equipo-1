@@ -1,25 +1,87 @@
-name: MediQuick Digital CI/CD Pipeline
+name: CI-CD MediQuick
 
-# Triggers requeridos por el rol
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+on: [push, pull_request]
 
 jobs:
-  build-and-test:
-    name: Build & Validate Code
+
+ 
+  migracion-bd:
+    name: "Etapa 3 - Migración de BD (Flyway)"
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: mediquick
+          POSTGRES_USER: mediquick
+          POSTGRES_PASSWORD: mediquick_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mediquick"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DB_URL: jdbc:postgresql://localhost:5432/mediquick
+      DB_USER: mediquick
+      DB_PASS: mediquick_ci
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 
+
+      - name: Aplicar migraciones (flyway migrate)
+        run: |
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/db/migrations:/flyway/sql" \
+            flyway/flyway:12 \
+            -url="$DB_URL" -user="$DB_USER" -password="$DB_PASS" \
+            -connectRetries=10 migrate
+
+      - name: Mostrar versiones aplicadas (flyway info)
+        run: |
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/db/migrations:/flyway/sql" \
+            flyway/flyway:12 \
+            -url="$DB_URL" -user="$DB_USER" -password="$DB_PASS" info
+
+      - name: Verificar migración (datos conservados, estados y stock)
+        env:
+          PGPASSWORD: mediquick_ci
+        run: |
+          psql -h localhost -U mediquick -d mediquick \
+               -f db/tests/verificar_migracion.sql
+
+
+  seguridad-devsecops:
+    name: "Etapa 4 - DevSecOps (Gitleaks + Trivy)"
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout del código fuente
-        uses: actions/checkout@v4
+      - name: Checkout del código
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 
 
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
+
+      - name: Escaneo de secretos (Gitleaks)
+        run: |
+          # Se descarga fuera del repositorio para no escanear el propio binario
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" dir . --redact --verbose --no-banner
+
+    
+      - name: Análisis de dependencias (Trivy SCA)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 
         with:
-          node-version: '20'
-
-      - name: Mensaje de confirmación del Pipeline
-        run: echo "Pipeline de MediQuick Digital ejecutado con éxito"
+          version: v0.69.3
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "1"
