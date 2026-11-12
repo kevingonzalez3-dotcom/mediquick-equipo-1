@@ -19,9 +19,23 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      - name: Mensaje de confirmación del Pipeline
-        run: echo "Pipeline de MediQuick Digital ejecutado con éxito"
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar ESLint
+        run: npm run lint
+
+      - name: Ejecutar pruebas automatizadas
+        run: npm test
+
+      - name: Verificar tipos TypeScript
+        run: npm run typecheck
+
+      - name: Compilar proyecto
+        run: npm run build
+
 
   migracion-bd:
     name: "Etapa 3 - Migración de BD (Flyway)"
