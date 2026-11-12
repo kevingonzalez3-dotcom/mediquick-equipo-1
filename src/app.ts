@@ -1,6 +1,6 @@
-
 import express, { type Express } from "express";
 import cors from "cors";
+import recetaRoutes from "./routes/receta.routes";
 
 const app: Express = express();
 
@@ -24,5 +24,8 @@ app.get("/health", (_req, res) => {
     message: "MediQuick Digital API funcionando correctamente"
   });
 });
+
+// Rutas del módulo de recetas
+app.use("/api/recetas", recetaRoutes);
 
 export default app;
