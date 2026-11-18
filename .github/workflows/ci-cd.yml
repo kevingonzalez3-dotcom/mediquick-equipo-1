@@ -1,3 +1,4 @@
+
 name: MediQuick Digital CI/CD Pipeline
 
 on:
@@ -11,6 +12,24 @@ jobs:
     name: Build & Validate Code
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: mediquick_test
+          POSTGRES_USER: mediquick
+          POSTGRES_PASSWORD: mediquick_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mediquick -d mediquick_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL_TEST: postgresql://mediquick:mediquick_ci@localhost:5432/mediquick_test
+
     steps:
       - name: Checkout del código fuente
         uses: actions/checkout@v4
@@ -23,6 +42,16 @@ jobs:
 
       - name: Instalar dependencias
         run: npm ci
+
+      - name: Aplicar migraciones a la base de pruebas
+        run: |
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/db/migrations:/flyway/sql" \
+            flyway/flyway:12 \
+            -url="jdbc:postgresql://localhost:5432/mediquick_test" \
+            -user="mediquick" \
+            -password="mediquick_ci" \
+            -connectRetries=10 migrate
 
       - name: Ejecutar ESLint
         run: npm run lint
@@ -87,6 +116,7 @@ jobs:
           psql -h localhost -U mediquick -d mediquick \
                -f db/tests/verificar_migracion.sql
 
+
   seguridad-devsecops:
     name: "Etapa 4 - DevSecOps (Gitleaks + Trivy)"
     runs-on: ubuntu-latest
@@ -114,6 +144,7 @@ jobs:
           ignore-unfixed: true
           format: table
           exit-code: "1"
+
 
   build-and-push:
     name: "Etapa 5 - Docker Build & Push (GHCR)"

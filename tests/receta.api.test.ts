@@ -3,8 +3,70 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import app from "../src/app";
+import { pool } from "../src/db";
 
-test("Integración HTTP del módulo de recetas", async () => {
+test("Integración HTTP del módulo de recetas", async (t) => {
+  const estadoPrueba: { recetaId?: number } = {};
+
+  const medicamentoId = 1;
+  const cantidadDespachada = 2;
+
+  // Limpiar los datos después de terminar la prueba.
+  t.after(async () => {
+    const recetaId = estadoPrueba.recetaId;
+
+    if (recetaId === undefined) {
+      return;
+    }
+
+    const cliente = await pool.connect();
+
+    try {
+      await cliente.query("BEGIN");
+
+      const movimientos = await cliente.query<{
+        medicamento_id: number;
+        cantidad: number;
+      }>(
+        `SELECT medicamento_id, SUM(cantidad)::INTEGER AS cantidad
+         FROM movimiento_inventario
+         WHERE receta_id = $1
+           AND tipo = 'SALIDA'
+         GROUP BY medicamento_id`,
+        [recetaId]
+      );
+
+      // Restaurar el inventario descontado.
+      for (const movimiento of movimientos.rows) {
+        await cliente.query(
+          `UPDATE medicamento
+           SET stock = stock + $1
+           WHERE id = $2`,
+          [movimiento.cantidad, movimiento.medicamento_id]
+        );
+      }
+
+      // Eliminar los movimientos de la prueba.
+      await cliente.query(
+        "DELETE FROM movimiento_inventario WHERE receta_id = $1",
+        [recetaId]
+      );
+
+      // Eliminar la receta y sus registros relacionados.
+      await cliente.query(
+        "DELETE FROM receta_medica WHERE id = $1",
+        [recetaId]
+      );
+
+      await cliente.query("COMMIT");
+    } catch (error) {
+      await cliente.query("ROLLBACK");
+      throw error;
+    } finally {
+      cliente.release();
+    }
+  });
+
   // 1. Comprobar que la API está funcionando.
   const health = await request(app).get("/health");
 
@@ -32,8 +94,10 @@ test("Integración HTTP del módulo de recetas", async () => {
   assert.ok(creacion.body.datos.id);
   assert.ok(creacion.body.datos.codigo_qr);
 
-  const recetaId = creacion.body.datos.id;
+  estadoPrueba.recetaId = creacion.body.datos.id;
+
   const codigoQR = creacion.body.datos.codigo_qr;
+  const recetaId = estadoPrueba.recetaId;
 
   // 4. Consultar la receta mediante su código QR.
   const consultaQR = await request(app)
@@ -54,8 +118,8 @@ test("Integración HTTP del módulo de recetas", async () => {
     .post("/api/recetas/medicamentos")
     .send({
       receta_id: recetaId,
-      medicamento_id: 1,
-      cantidad: 2,
+      medicamento_id: medicamentoId,
+      cantidad: cantidadDespachada,
       dosis: "500 mg cada 8 horas",
       indicaciones: "Tomar después de los alimentos"
     });
@@ -94,5 +158,8 @@ test("Integración HTTP del módulo de recetas", async () => {
   assert.ok(Array.isArray(movimientos.body.datos));
   assert.ok(movimientos.body.datos.length > 0);
   assert.equal(movimientos.body.datos[0].tipo, "SALIDA");
-  assert.equal(movimientos.body.datos[0].cantidad, 2);
+  assert.equal(
+    movimientos.body.datos[0].cantidad,
+    cantidadDespachada
+  );
 });

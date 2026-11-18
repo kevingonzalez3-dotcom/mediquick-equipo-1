@@ -1,6 +1,8 @@
 
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
+
+import { pool } from "../src/db";
 
 import {
   crearReceta,
@@ -14,64 +16,133 @@ import {
   obtenerMovimientosInventario
 } from "../src/services/receta.service";
 
-test("Debe crear una receta con estado Emitida y código QR", () => {
-  const receta = crearReceta({
-    medico_id: "medico-test-001",
-    paciente_id: "paciente-test-001",
-    fecha_vigencia: "2027-12-31"
+// ==========================================
+// 1. DATOS DE PRUEBA
+// ==========================================
+
+const MEDICO_ID = "11111111-1111-1111-1111-111111111111";
+const PACIENTE_ID = "33333333-3333-3333-3333-333333333333";
+const FARMACEUTICO_ID = "22222222-2222-2222-2222-222222222222";
+
+const FECHA_VIGENCIA = "2027-12-31";
+
+const recetasCreadas: number[] = [];
+
+// ==========================================
+// 2. FUNCIONES AUXILIARES
+// ==========================================
+
+const crearRecetaPrueba = async (): Promise<
+  Awaited<ReturnType<typeof crearReceta>>
+> => {
+  const receta = await crearReceta({
+    medico_id: MEDICO_ID,
+    paciente_id: PACIENTE_ID,
+    fecha_vigencia: FECHA_VIGENCIA
   });
+
+  recetasCreadas.push(receta.id);
+
+  return receta;
+};
+
+// ==========================================
+// 3. LIMPIEZA DESPUÉS DE CADA PRUEBA
+// ==========================================
+
+afterEach(async () => {
+  for (const recetaId of recetasCreadas) {
+    try {
+      const movimientos = await pool.query<{
+        medicamento_id: number;
+        cantidad: number;
+      }>(
+        `SELECT medicamento_id, SUM(cantidad)::INTEGER AS cantidad
+         FROM movimiento_inventario
+         WHERE receta_id = $1
+           AND tipo = 'SALIDA'
+         GROUP BY medicamento_id`,
+        [recetaId]
+      );
+
+      // Restaurar el inventario descontado por la receta.
+      for (const movimiento of movimientos.rows) {
+        await pool.query(
+          `UPDATE medicamento
+           SET stock = stock + $1
+           WHERE id = $2`,
+          [movimiento.cantidad, movimiento.medicamento_id]
+        );
+      }
+
+      // Eliminar movimientos antes de eliminar la receta.
+      await pool.query(
+        "DELETE FROM movimiento_inventario WHERE receta_id = $1",
+        [recetaId]
+      );
+
+      // Los detalles y el historial se eliminan mediante CASCADE.
+      await pool.query(
+        "DELETE FROM receta_medica WHERE id = $1",
+        [recetaId]
+      );
+    } catch (error) {
+      console.error(
+        `Error limpiando la receta de prueba ${recetaId}:`,
+        error
+      );
+
+      throw error;
+    }
+  }
+
+  recetasCreadas.length = 0;
+});
+
+// ==========================================
+// 4. PRUEBAS DEL SERVICIO DE RECETAS
+// ==========================================
+
+test("Debe crear una receta con estado Emitida y código QR", async () => {
+  const receta = await crearRecetaPrueba();
 
   assert.equal(receta.estado, "Emitida");
   assert.ok(receta.codigo_qr);
   assert.equal(receta.detalles.length, 0);
 });
 
-test("Debe consultar una receta mediante su código QR", () => {
-  const receta = crearReceta({
-    medico_id: "medico-test-002",
-    paciente_id: "paciente-test-002",
-    fecha_vigencia: "2027-12-31"
-  });
+test("Debe consultar una receta mediante su código QR", async () => {
+  const receta = await crearRecetaPrueba();
 
-  const resultado = obtenerRecetaPorQR(receta.codigo_qr);
+  const resultado = await obtenerRecetaPorQR(receta.codigo_qr);
 
   assert.equal(resultado?.id, receta.id);
 });
 
-test("Debe consultar las recetas de un paciente", () => {
-  const pacienteId = "paciente-test-003";
+test("Debe consultar las recetas de un paciente", async () => {
+  const receta = await crearRecetaPrueba();
 
-  const receta = crearReceta({
-    medico_id: "medico-test-003",
-    paciente_id: pacienteId,
-    fecha_vigencia: "2027-12-31"
-  });
-
-  const resultados = obtenerRecetasPorPaciente(pacienteId);
+  const resultados = await obtenerRecetasPorPaciente(PACIENTE_ID);
 
   assert.ok(resultados.some((item) => item.id === receta.id));
 });
 
-test("Debe rechazar la creación de una receta sin médico", () => {
-  assert.throws(
+test("Debe rechazar la creación de una receta sin médico", async () => {
+  await assert.rejects(
     () =>
       crearReceta({
         medico_id: " ",
-        paciente_id: "paciente-test-004",
-        fecha_vigencia: "2027-12-31"
+        paciente_id: PACIENTE_ID,
+        fecha_vigencia: FECHA_VIGENCIA
       }),
     /médico y el paciente son obligatorios/
   );
 });
 
-test("Debe agregar un medicamento a una receta", () => {
-  const receta = crearReceta({
-    medico_id: "medico-test-005",
-    paciente_id: "paciente-test-005",
-    fecha_vigencia: "2027-12-31"
-  });
+test("Debe agregar un medicamento a una receta", async () => {
+  const receta = await crearRecetaPrueba();
 
-  const resultado = agregarMedicamentoAReceta({
+  const resultado = await agregarMedicamentoAReceta({
     receta_id: receta.id,
     medicamento_id: 1,
     cantidad: 5,
@@ -83,14 +154,10 @@ test("Debe agregar un medicamento a una receta", () => {
   assert.equal(resultado.detalles[0]?.cantidad, 5);
 });
 
-test("No debe permitir cantidades iguales o menores que cero", () => {
-  const receta = crearReceta({
-    medico_id: "medico-test-006",
-    paciente_id: "paciente-test-006",
-    fecha_vigencia: "2027-12-31"
-  });
+test("No debe permitir cantidades iguales o menores que cero", async () => {
+  const receta = await crearRecetaPrueba();
 
-  assert.throws(
+  await assert.rejects(
     () =>
       agregarMedicamentoAReceta({
         receta_id: receta.id,
@@ -103,114 +170,126 @@ test("No debe permitir cantidades iguales o menores que cero", () => {
   );
 });
 
-test("Debe permitir cambiar una receta de Emitida a En Proceso", () => {
-  const receta = crearReceta({
-    medico_id: "medico-test-007",
-    paciente_id: "paciente-test-007",
-    fecha_vigencia: "2027-12-31"
-  });
+test("Debe permitir cambiar una receta de Emitida a En Proceso", async () => {
+  const receta = await crearRecetaPrueba();
 
-  const resultado = cambiarEstadoReceta(receta.id, "En Proceso");
+  const resultado = await cambiarEstadoReceta(
+    receta.id,
+    "En Proceso"
+  );
+
+  const historial = await obtenerHistorialEstados(receta.id);
 
   assert.equal(resultado.estado, "En Proceso");
-  assert.equal(obtenerHistorialEstados(receta.id).length, 1);
+  assert.equal(historial.length, 1);
 });
 
-test("No debe permitir despachar directamente desde cambiarEstadoReceta", () => {
-  const receta = crearReceta({
-    medico_id: "medico-test-008",
-    paciente_id: "paciente-test-008",
-    fecha_vigencia: "2027-12-31"
-  });
+test("No debe permitir despachar directamente desde cambiarEstadoReceta", async () => {
+  const receta = await crearRecetaPrueba();
 
-  cambiarEstadoReceta(receta.id, "En Proceso");
+  await cambiarEstadoReceta(receta.id, "En Proceso");
 
-  assert.throws(
+  await assert.rejects(
     () => cambiarEstadoReceta(receta.id, "Despachada"),
     /utilizar despacharReceta/
   );
 });
 
-test("Debe descontar el inventario al despachar una receta", () => {
-  const receta = crearReceta({
-    medico_id: "medico-test-009",
-    paciente_id: "paciente-test-009",
-    fecha_vigencia: "2027-12-31"
-  });
+test("Debe descontar el inventario al despachar una receta", async () => {
+  const receta = await crearRecetaPrueba();
 
-  agregarMedicamentoAReceta({
+  // Utilizamos el medicamento 2 para separar esta prueba
+  // de la prueba de integración HTTP.
+  const medicamentoId = 2;
+
+  await agregarMedicamentoAReceta({
     receta_id: receta.id,
-    medicamento_id: 1,
+    medicamento_id: medicamentoId,
     cantidad: 5,
     dosis: "Una cápsula",
     indicaciones: "Cada ocho horas"
   });
 
-  cambiarEstadoReceta(receta.id, "En Proceso");
+  await cambiarEstadoReceta(receta.id, "En Proceso");
 
-  const stockAntes = obtenerInventario().find(
-    (medicamento) => medicamento.id === 1
+  const inventarioAntes = await obtenerInventario();
+
+  const stockAntes = inventarioAntes.find(
+    (medicamento) => medicamento.id === medicamentoId
   )?.stock;
 
-  const resultado = despacharReceta(receta.id, "farmaceutico-test-001");
+  assert.ok(stockAntes !== undefined);
 
-  const stockDespues = obtenerInventario().find(
-    (medicamento) => medicamento.id === 1
+  const resultado = await despacharReceta(
+    receta.id,
+    FARMACEUTICO_ID
+  );
+
+  const inventarioDespues = await obtenerInventario();
+
+  const stockDespues = inventarioDespues.find(
+    (medicamento) => medicamento.id === medicamentoId
   )?.stock;
+
+  const movimientos = await obtenerMovimientosInventario(receta.id);
 
   assert.equal(resultado.estado, "Despachada");
-  assert.equal(resultado.farmaceutico_id, "farmaceutico-test-001");
-  assert.equal(stockDespues, (stockAntes ?? 0) - 5);
-  assert.equal(obtenerMovimientosInventario(receta.id).length, 1);
+  assert.equal(resultado.farmaceutico_id, FARMACEUTICO_ID);
+  assert.equal(stockDespues, stockAntes - 5);
+  assert.equal(movimientos.length, 1);
 });
 
-test("No debe descontar inventario si el stock es insuficiente", () => {
-  const receta = crearReceta({
-    medico_id: "medico-test-010",
-    paciente_id: "paciente-test-010",
-    fecha_vigencia: "2027-12-31"
-  });
+test("No debe descontar inventario si el stock es insuficiente", async () => {
+  const receta = await crearRecetaPrueba();
 
-  const medicamento = obtenerInventario().find(
-    (item) => item.id === 3
+  const medicamentoId = 3;
+
+  const inventario = await obtenerInventario();
+
+  const medicamento = inventario.find(
+    (item) => item.id === medicamentoId
   );
 
   assert.ok(medicamento);
 
   const stockAntes = medicamento.stock;
 
-  agregarMedicamentoAReceta({
+  await agregarMedicamentoAReceta({
     receta_id: receta.id,
-    medicamento_id: 3,
+    medicamento_id: medicamentoId,
     cantidad: stockAntes + 1,
     dosis: "Una tableta",
     indicaciones: "Según indicación médica"
   });
 
-  cambiarEstadoReceta(receta.id, "En Proceso");
+  await cambiarEstadoReceta(receta.id, "En Proceso");
 
-  assert.throws(
-    () => despacharReceta(receta.id, "farmaceutico-test-002"),
+  await assert.rejects(
+    () => despacharReceta(receta.id, FARMACEUTICO_ID),
     /Stock insuficiente/
   );
 
-  const stockDespues = obtenerInventario().find(
-    (item) => item.id === 3
+  const inventarioDespues = await obtenerInventario();
+
+  const stockDespues = inventarioDespues.find(
+    (item) => item.id === medicamentoId
   )?.stock;
 
+  const recetaActualizada = await obtenerRecetaPorQR(
+    receta.codigo_qr
+  );
+
+  const movimientos = await obtenerMovimientosInventario(receta.id);
+
   assert.equal(stockDespues, stockAntes);
-  assert.equal(receta.estado, "En Proceso");
-  assert.equal(obtenerMovimientosInventario(receta.id).length, 0);
+  assert.equal(recetaActualizada?.estado, "En Proceso");
+  assert.equal(movimientos.length, 0);
 });
 
-test("No debe permitir modificar una receta despachada", () => {
-  const receta = crearReceta({
-    medico_id: "medico-test-011",
-    paciente_id: "paciente-test-011",
-    fecha_vigencia: "2027-12-31"
-  });
+test("No debe permitir modificar una receta despachada", async () => {
+  const receta = await crearRecetaPrueba();
 
-  agregarMedicamentoAReceta({
+  await agregarMedicamentoAReceta({
     receta_id: receta.id,
     medicamento_id: 2,
     cantidad: 2,
@@ -218,10 +297,11 @@ test("No debe permitir modificar una receta despachada", () => {
     indicaciones: "Cada ocho horas"
   });
 
-  cambiarEstadoReceta(receta.id, "En Proceso");
-  despacharReceta(receta.id, "farmaceutico-test-003");
+  await cambiarEstadoReceta(receta.id, "En Proceso");
 
-  assert.throws(
+  await despacharReceta(receta.id, FARMACEUTICO_ID);
+
+  await assert.rejects(
     () =>
       agregarMedicamentoAReceta({
         receta_id: receta.id,

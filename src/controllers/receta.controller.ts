@@ -12,10 +12,16 @@ import {
   obtenerMovimientosInventario
 } from "../services/receta.service";
 
-// Crear una receta médica
-export const crearRecetaController = (req: Request, res: Response): void => {
+// ==========================================
+// 1. CREAR UNA RECETA MÉDICA
+// ==========================================
+
+export const crearRecetaController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
   try {
-    const receta = crearReceta(req.body);
+    const receta = await crearReceta(req.body);
 
     res.status(201).json({
       mensaje: "Receta médica creada correctamente",
@@ -23,48 +29,80 @@ export const crearRecetaController = (req: Request, res: Response): void => {
     });
   } catch (error) {
     res.status(400).json({
-      mensaje: error instanceof Error ? error.message : "Error al crear la receta"
+      mensaje: error instanceof Error
+        ? error.message
+        : "Error al crear la receta"
     });
   }
 };
 
-// Consultar una receta mediante su código QR
-export const obtenerRecetaPorQRController = (req: Request, res: Response): void => {
+// ==========================================
+// 2. CONSULTAR RECETA MEDIANTE CÓDIGO QR
+// ==========================================
+
+export const obtenerRecetaPorQRController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
   try {
     const codigoQR = String(req.params.codigoQR ?? "");
-    const receta = obtenerRecetaPorQR(codigoQR);
+
+    const receta = await obtenerRecetaPorQR(codigoQR);
 
     if (!receta) {
-      res.status(404).json({ mensaje: "Receta no encontrada" });
+      res.status(404).json({
+        mensaje: "Receta no encontrada"
+      });
       return;
     }
 
-    res.status(200).json({ datos: receta });
+    res.status(200).json({
+      datos: receta
+    });
   } catch (error) {
     res.status(400).json({
-      mensaje: error instanceof Error ? error.message : "Error al consultar la receta"
+      mensaje: error instanceof Error
+        ? error.message
+        : "Error al consultar la receta"
     });
   }
 };
 
-// Consultar recetas de un paciente
-export const obtenerRecetasPorPacienteController = (req: Request, res: Response): void => {
+// ==========================================
+// 3. CONSULTAR RECETAS DE UN PACIENTE
+// ==========================================
+
+export const obtenerRecetasPorPacienteController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
   try {
     const pacienteId = String(req.params.pacienteId ?? "");
-    const recetas = obtenerRecetasPorPaciente(pacienteId);
 
-    res.status(200).json({ datos: recetas });
+    const recetas = await obtenerRecetasPorPaciente(pacienteId);
+
+    res.status(200).json({
+      datos: recetas
+    });
   } catch (error) {
     res.status(400).json({
-      mensaje: error instanceof Error ? error.message : "Error al consultar las recetas"
+      mensaje: error instanceof Error
+        ? error.message
+        : "Error al consultar las recetas"
     });
   }
 };
 
-// Agregar un medicamento a una receta
-export const agregarMedicamentoController = (req: Request, res: Response): void => {
+// ==========================================
+// 4. AGREGAR MEDICAMENTO A UNA RECETA
+// ==========================================
+
+export const agregarMedicamentoController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
   try {
-    const receta = agregarMedicamentoAReceta(req.body);
+    const receta = await agregarMedicamentoAReceta(req.body);
 
     res.status(200).json({
       mensaje: "Medicamento agregado correctamente",
@@ -72,18 +110,33 @@ export const agregarMedicamentoController = (req: Request, res: Response): void 
     });
   } catch (error) {
     res.status(400).json({
-      mensaje: error instanceof Error ? error.message : "Error al agregar medicamento"
+      mensaje: error instanceof Error
+        ? error.message
+        : "Error al agregar medicamento"
     });
   }
 };
 
-// Cambiar el estado de una receta
-export const cambiarEstadoRecetaController = (req: Request, res: Response): void => {
+// ==========================================
+// 5. CAMBIAR ESTADO DE UNA RECETA
+// ==========================================
+
+export const cambiarEstadoRecetaController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
   try {
     const recetaId = Number(req.params.recetaId);
     const { estado } = req.body;
 
-    const receta = cambiarEstadoReceta(recetaId, estado);
+    if (!Number.isInteger(recetaId) || recetaId <= 0) {
+      res.status(400).json({
+        mensaje: "El identificador de la receta no es válido"
+      });
+      return;
+    }
+
+    const receta = await cambiarEstadoReceta(recetaId, estado);
 
     res.status(200).json({
       mensaje: "Estado de la receta actualizado correctamente",
@@ -91,18 +144,36 @@ export const cambiarEstadoRecetaController = (req: Request, res: Response): void
     });
   } catch (error) {
     res.status(400).json({
-      mensaje: error instanceof Error ? error.message : "Error al cambiar el estado"
+      mensaje: error instanceof Error
+        ? error.message
+        : "Error al cambiar el estado"
     });
   }
 };
 
-// Despachar una receta
-export const despacharRecetaController = (req: Request, res: Response): void => {
+// ==========================================
+// 6. DESPACHAR UNA RECETA
+// ==========================================
+
+export const despacharRecetaController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
   try {
     const recetaId = Number(req.params.recetaId);
     const { farmaceuticoId } = req.body;
 
-    const receta = despacharReceta(recetaId, farmaceuticoId);
+    if (!Number.isInteger(recetaId) || recetaId <= 0) {
+      res.status(400).json({
+        mensaje: "El identificador de la receta no es válido"
+      });
+      return;
+    }
+
+    const receta = await despacharReceta(
+      recetaId,
+      farmaceuticoId
+    );
 
     res.status(200).json({
       mensaje: "Receta despachada correctamente",
@@ -110,48 +181,96 @@ export const despacharRecetaController = (req: Request, res: Response): void => 
     });
   } catch (error) {
     res.status(400).json({
-      mensaje: error instanceof Error ? error.message : "Error al despachar la receta"
+      mensaje: error instanceof Error
+        ? error.message
+        : "Error al despachar la receta"
     });
   }
 };
 
-// Consultar inventario
-export const obtenerInventarioController = (_req: Request, res: Response): void => {
-  res.status(200).json({
-    datos: obtenerInventario()
-  });
+// ==========================================
+// 7. CONSULTAR INVENTARIO
+// ==========================================
+
+export const obtenerInventarioController = async (
+  _req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const inventario = await obtenerInventario();
+
+    res.status(200).json({
+      datos: inventario
+    });
+  } catch (error) {
+    res.status(500).json({
+      mensaje: error instanceof Error
+        ? error.message
+        : "Error al consultar el inventario"
+    });
+  }
 };
 
-// Consultar historial de estados de una receta
-export const obtenerHistorialEstadosController = (req: Request, res: Response): void => {
+// ==========================================
+// 8. CONSULTAR HISTORIAL DE ESTADOS
+// ==========================================
+
+export const obtenerHistorialEstadosController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
   try {
     const recetaId = Number(req.params.recetaId);
 
-    const historial = obtenerHistorialEstados(recetaId);
+    if (!Number.isInteger(recetaId) || recetaId <= 0) {
+      res.status(400).json({
+        mensaje: "El identificador de la receta no es válido"
+      });
+      return;
+    }
+
+    const historial = await obtenerHistorialEstados(recetaId);
 
     res.status(200).json({
       datos: historial
     });
   } catch (error) {
     res.status(400).json({
-      mensaje: error instanceof Error ? error.message : "Error al consultar el historial"
+      mensaje: error instanceof Error
+        ? error.message
+        : "Error al consultar el historial"
     });
   }
 };
 
-// Consultar movimientos de inventario de una receta
-export const obtenerMovimientosInventarioController = (req: Request, res: Response): void => {
+// ==========================================
+// 9. CONSULTAR MOVIMIENTOS DE INVENTARIO
+// ==========================================
+
+export const obtenerMovimientosInventarioController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
   try {
     const recetaId = Number(req.params.recetaId);
 
-    const movimientos = obtenerMovimientosInventario(recetaId);
+    if (!Number.isInteger(recetaId) || recetaId <= 0) {
+      res.status(400).json({
+        mensaje: "El identificador de la receta no es válido"
+      });
+      return;
+    }
+
+    const movimientos = await obtenerMovimientosInventario(recetaId);
 
     res.status(200).json({
       datos: movimientos
     });
   } catch (error) {
     res.status(400).json({
-      mensaje: error instanceof Error ? error.message : "Error al consultar los movimientos"
+      mensaje: error instanceof Error
+        ? error.message
+        : "Error al consultar los movimientos"
     });
   }
 };
