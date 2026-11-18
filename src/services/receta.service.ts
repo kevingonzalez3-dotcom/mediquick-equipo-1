@@ -1,5 +1,4 @@
-
-import { randomUUID } from "node:crypto";
+import { pool } from "../db";
 
 import type {
   EstadoReceta,
@@ -9,146 +8,49 @@ import type {
 } from "../types/receta.types";
 
 // ==========================================
-// 1. ALMACENAMIENTO TEMPORAL EN MEMORIA
+// 1. TIPOS INTERNOS DE BASE DE DATOS
 // ==========================================
 
-const recetas = new Map<number, RecetaMedica>();
-const medicamentos = new Map<number, Medicamento>();
+interface RecetaRow {
+  id: number;
+  codigo_qr: string;
+  medico_id: string;
+  paciente_id: string;
+  farmaceutico_id: string | null;
+  estado: EstadoReceta;
+  fecha_emision: Date | string;
+  fecha_vigencia: Date | string;
+  fecha_despacho: Date | string | null;
+  observaciones: string | null;
+  actualizado_en: Date | string;
+}
 
-let siguienteIdReceta = 1;
-let siguienteIdDetalle = 1;
-let siguienteIdMovimiento = 1;
-
-// ==========================================
-// 2. HISTORIAL Y MOVIMIENTOS DE INVENTARIO
-// ==========================================
+interface DetalleRow {
+  id: number;
+  receta_id: number;
+  medicamento_id: number;
+  cantidad: number;
+  dosis: string;
+  indicaciones: string;
+}
 
 interface HistorialEstadoReceta {
+  id: number;
   receta_id: number;
-  estado_anterior: EstadoReceta;
+  estado_anterior: EstadoReceta | null;
   estado_nuevo: EstadoReceta;
-  fecha_cambio: string;
+  cambiado_en: Date | string;
 }
 
 interface MovimientoInventario {
   id: number;
   medicamento_id: number;
-  receta_id: number;
-  tipo: "SALIDA";
+  receta_id: number | null;
+  tipo: "ENTRADA" | "SALIDA";
   cantidad: number;
-  fecha_movimiento: string;
+  stock_resultante: number;
+  fecha: Date | string;
 }
-
-const historialEstados: HistorialEstadoReceta[] = [];
-const movimientosInventario: MovimientoInventario[] = [];
-
-// ==========================================
-// 3. ESTADOS Y TRANSICIONES DE RECETAS
-// ==========================================
-
-const estadosFinales: EstadoReceta[] = [
-  "Despachada",
-  "Cancelada",
-  "Vencida"
-];
-
-const transicionesPermitidas: Record<EstadoReceta, EstadoReceta[]> = {
-  Emitida: ["En Proceso", "Cancelada", "Vencida"],
-  "En Proceso": ["Despachada", "Cancelada"],
-  Despachada: [],
-  Cancelada: [],
-  Vencida: []
-};
-
-// ==========================================
-// 4. FUNCIONES AUXILIARES
-// ==========================================
-
-const fechaActual = (): string => new Date().toISOString();
-
-const fechaHoy = (): string => {
-  const hoy = new Date();
-  const anio = hoy.getFullYear();
-  const mes = String(hoy.getMonth() + 1).padStart(2, "0");
-  const dia = String(hoy.getDate()).padStart(2, "0");
-
-  return `${anio}-${mes}-${dia}`;
-};
-
-const registrarCambioEstado = (
-  receta: RecetaMedica,
-  nuevoEstado: EstadoReceta,
-  fecha: string
-): void => {
-  historialEstados.push({
-    receta_id: receta.id,
-    estado_anterior: receta.estado,
-    estado_nuevo: nuevoEstado,
-    fecha_cambio: fecha
-  });
-
-  receta.estado = nuevoEstado;
-  receta.actualizado_en = fecha;
-};
-
-// ==========================================
-// 5. INVENTARIO INICIAL DE MEDICAMENTOS
-// ==========================================
-
-const inicializarMedicamentos = (): void => {
-  const medicamentosIniciales: Medicamento[] = [
-    {
-      id: 1,
-      codigo: "MED-001",
-      nombre: "Amoxicilina 500 mg",
-      presentacion: "Cápsulas",
-      stock: 120,
-      stock_minimo: 10
-    },
-    {
-      id: 2,
-      codigo: "MED-002",
-      nombre: "Ibuprofeno 400 mg",
-      presentacion: "Tabletas",
-      stock: 200,
-      stock_minimo: 10
-    },
-    {
-      id: 3,
-      codigo: "MED-003",
-      nombre: "Loratadina 10 mg",
-      presentacion: "Tabletas",
-      stock: 80,
-      stock_minimo: 10
-    },
-    {
-      id: 4,
-      codigo: "MED-004",
-      nombre: "Omeprazol 20 mg",
-      presentacion: "Cápsulas",
-      stock: 60,
-      stock_minimo: 10
-    },
-    {
-      id: 5,
-      codigo: "MED-005",
-      nombre: "Metformina 850 mg",
-      presentacion: "Tabletas",
-      stock: 45,
-      stock_minimo: 10
-    }
-  ];
-
-  medicamentosIniciales.forEach((medicamento) => {
-    medicamentos.set(medicamento.id, medicamento);
-  });
-};
-
-inicializarMedicamentos();
-
-// ==========================================
-// 6. INTERFACES DE DATOS
-// ==========================================
 
 interface CrearRecetaDTO {
   medico_id: string;
@@ -166,103 +68,209 @@ interface AgregarMedicamentoDTO {
 }
 
 // ==========================================
-// 7. CREAR UNA NUEVA RECETA
+// 2. FUNCIONES AUXILIARES
 // ==========================================
 
-export const crearReceta = (
+const convertirFecha = (fecha: Date | string): string => {
+  if (fecha instanceof Date) {
+    return fecha.toISOString();
+  }
+
+  return fecha;
+};
+
+const convertirFechaNullable = (
+  fecha: Date | string | null
+): string | null => {
+  return fecha === null ? null : convertirFecha(fecha);
+};
+
+const mapearDetalle = (fila: DetalleRow): DetalleReceta => ({
+  id: Number(fila.id),
+  receta_id: Number(fila.receta_id),
+  medicamento_id: Number(fila.medicamento_id),
+  cantidad: Number(fila.cantidad),
+  dosis: fila.dosis,
+  indicaciones: fila.indicaciones
+});
+
+const mapearReceta = (
+  fila: RecetaRow,
+  detalles: DetalleReceta[]
+): RecetaMedica => ({
+  id: Number(fila.id),
+  codigo_qr: fila.codigo_qr,
+  medico_id: fila.medico_id,
+  paciente_id: fila.paciente_id,
+  farmaceutico_id: fila.farmaceutico_id,
+  estado: fila.estado,
+  fecha_emision: convertirFecha(fila.fecha_emision),
+  fecha_vigencia: String(fila.fecha_vigencia).slice(0, 10),
+  fecha_despacho: convertirFechaNullable(fila.fecha_despacho),
+  observaciones: fila.observaciones,
+  actualizado_en: convertirFecha(fila.actualizado_en),
+  detalles
+});
+
+const obtenerDetallesDeReceta = async (
+  recetaId: number
+): Promise<DetalleReceta[]> => {
+  const resultado = await pool.query<DetalleRow>(
+    `SELECT id, receta_id, medicamento_id, cantidad, dosis, indicaciones
+     FROM detalle_receta
+     WHERE receta_id = $1
+     ORDER BY id`,
+    [recetaId]
+  );
+
+  return resultado.rows.map(mapearDetalle);
+};
+
+const obtenerRecetaPorId = async (
+  recetaId: number
+): Promise<RecetaMedica | undefined> => {
+  const resultado = await pool.query<RecetaRow>(
+    `SELECT id, codigo_qr, medico_id, paciente_id, farmaceutico_id,
+            estado, fecha_emision, fecha_vigencia, fecha_despacho,
+            observaciones, actualizado_en
+     FROM receta_medica
+     WHERE id = $1`,
+    [recetaId]
+  );
+
+  const fila = resultado.rows[0];
+
+  if (!fila) {
+    return undefined;
+  }
+
+  const detalles = await obtenerDetallesDeReceta(recetaId);
+
+  return mapearReceta(fila, detalles);
+};
+
+const estadosFinales: EstadoReceta[] = [
+  "Despachada",
+  "Cancelada",
+  "Vencida"
+];
+
+// ==========================================
+// 3. CREAR UNA NUEVA RECETA
+// ==========================================
+
+export const crearReceta = async (
   datos: CrearRecetaDTO
-): RecetaMedica => {
+): Promise<RecetaMedica> => {
   if (!datos.medico_id.trim() || !datos.paciente_id.trim()) {
     throw new Error("El médico y el paciente son obligatorios");
   }
 
-  const fechaVigencia = new Date(datos.fecha_vigencia);
+  if (!datos.fecha_vigencia) {
+    throw new Error("La fecha de vigencia es obligatoria");
+  }
+
+  const fecha = new Date(`${datos.fecha_vigencia}T00:00:00`);
 
   if (
-    !datos.fecha_vigencia ||
-    Number.isNaN(fechaVigencia.getTime()) ||
-    datos.fecha_vigencia.slice(0, 10) < fechaHoy()
+    Number.isNaN(fecha.getTime()) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(datos.fecha_vigencia) ||
+    fecha.toISOString().slice(0, 10) !== datos.fecha_vigencia
   ) {
     throw new Error("La fecha de vigencia no es válida");
   }
 
-  const fecha = fechaActual();
+  const resultado = await pool.query<RecetaRow>(
+    `INSERT INTO receta_medica
+       (medico_id, paciente_id, fecha_vigencia, observaciones)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, codigo_qr, medico_id, paciente_id, farmaceutico_id,
+               estado, fecha_emision, fecha_vigencia, fecha_despacho,
+               observaciones, actualizado_en`,
+    [
+      datos.medico_id,
+      datos.paciente_id,
+      datos.fecha_vigencia,
+      datos.observaciones?.trim() || null
+    ]
+  );
 
-  const nuevaReceta: RecetaMedica = {
-    id: siguienteIdReceta++,
-    codigo_qr: randomUUID(),
-    medico_id: datos.medico_id,
-    paciente_id: datos.paciente_id,
-    farmaceutico_id: null,
-    estado: "Emitida",
-    fecha_emision: fecha,
-    fecha_vigencia: datos.fecha_vigencia,
-    fecha_despacho: null,
-    observaciones: datos.observaciones ?? null,
-    actualizado_en: fecha,
-    detalles: []
-  };
+  const nuevaReceta = resultado.rows[0];
 
-  recetas.set(nuevaReceta.id, nuevaReceta);
+  if (!nuevaReceta) {
+    throw new Error("No fue posible crear la receta médica");
+  }
 
-  return nuevaReceta;
+  return mapearReceta(nuevaReceta, []);
 };
 
 // ==========================================
-// 8. CONSULTAR RECETA MEDIANTE CÓDIGO QR
+// 4. CONSULTAR RECETA MEDIANTE CÓDIGO QR
 // ==========================================
 
-export const obtenerRecetaPorQR = (
+export const obtenerRecetaPorQR = async (
   codigoQR: string
-): RecetaMedica | undefined => {
+): Promise<RecetaMedica | undefined> => {
   if (!codigoQR.trim()) {
     throw new Error("El código QR es obligatorio");
   }
 
-  return Array.from(recetas.values()).find(
-    (receta) => receta.codigo_qr === codigoQR
+  const resultado = await pool.query<RecetaRow>(
+    `SELECT id, codigo_qr, medico_id, paciente_id, farmaceutico_id,
+            estado, fecha_emision, fecha_vigencia, fecha_despacho,
+            observaciones, actualizado_en
+     FROM receta_medica
+     WHERE codigo_qr = $1`,
+    [codigoQR]
   );
+
+  const fila = resultado.rows[0];
+
+  if (!fila) {
+    return undefined;
+  }
+
+  const detalles = await obtenerDetallesDeReceta(Number(fila.id));
+
+  return mapearReceta(fila, detalles);
 };
 
 // ==========================================
-// 9. CONSULTAR RECETAS POR PACIENTE
+// 5. CONSULTAR RECETAS POR PACIENTE
 // ==========================================
 
-export const obtenerRecetasPorPaciente = (
+export const obtenerRecetasPorPaciente = async (
   pacienteId: string
-): RecetaMedica[] => {
+): Promise<RecetaMedica[]> => {
   if (!pacienteId.trim()) {
     throw new Error("El identificador del paciente es obligatorio");
   }
 
-  return Array.from(recetas.values()).filter(
-    (receta) => receta.paciente_id === pacienteId
+  const resultado = await pool.query<RecetaRow>(
+    `SELECT id, codigo_qr, medico_id, paciente_id, farmaceutico_id,
+            estado, fecha_emision, fecha_vigencia, fecha_despacho,
+            observaciones, actualizado_en
+     FROM receta_medica
+     WHERE paciente_id = $1
+     ORDER BY fecha_emision DESC`,
+    [pacienteId]
+  );
+
+  return Promise.all(
+    resultado.rows.map(async (fila) => {
+      const detalles = await obtenerDetallesDeReceta(Number(fila.id));
+      return mapearReceta(fila, detalles);
+    })
   );
 };
 
 // ==========================================
-// 10. AGREGAR MEDICAMENTO A UNA RECETA
+// 6. AGREGAR MEDICAMENTO A UNA RECETA
 // ==========================================
 
-export const agregarMedicamentoAReceta = (
+export const agregarMedicamentoAReceta = async (
   datos: AgregarMedicamentoDTO
-): RecetaMedica => {
-  const receta = recetas.get(datos.receta_id);
-
-  if (!receta) {
-    throw new Error("La receta médica no existe");
-  }
-
-  if (estadosFinales.includes(receta.estado)) {
-    throw new Error("No se puede modificar una receta finalizada");
-  }
-
-  const medicamento = medicamentos.get(datos.medicamento_id);
-
-  if (!medicamento) {
-    throw new Error("El medicamento no existe");
-  }
-
+): Promise<RecetaMedica> => {
   if (!Number.isInteger(datos.cantidad) || datos.cantidad <= 0) {
     throw new Error("La cantidad debe ser un número entero mayor que cero");
   }
@@ -271,183 +279,270 @@ export const agregarMedicamentoAReceta = (
     throw new Error("La dosis y las indicaciones son obligatorias");
   }
 
-  const nuevoDetalle: DetalleReceta = {
-    id: siguienteIdDetalle++,
-    receta_id: receta.id,
-    medicamento_id: medicamento.id,
-    cantidad: datos.cantidad,
-    dosis: datos.dosis.trim(),
-    indicaciones: datos.indicaciones.trim()
-  };
+  if (datos.dosis.trim().length > 100) {
+    throw new Error("La dosis no puede superar los 100 caracteres");
+  }
 
-  receta.detalles.push(nuevoDetalle);
-  receta.actualizado_en = fechaActual();
+  const cliente = await pool.connect();
 
-  return receta;
+  try {
+    await cliente.query("BEGIN");
+
+    const recetaResultado = await cliente.query<RecetaRow>(
+      `SELECT id, codigo_qr, medico_id, paciente_id, farmaceutico_id,
+              estado, fecha_emision, fecha_vigencia, fecha_despacho,
+              observaciones, actualizado_en
+       FROM receta_medica
+       WHERE id = $1
+       FOR UPDATE`,
+      [datos.receta_id]
+    );
+
+    const receta = recetaResultado.rows[0];
+
+    if (!receta) {
+      throw new Error("La receta médica no existe");
+    }
+
+    if (estadosFinales.includes(receta.estado)) {
+      throw new Error("No se puede modificar una receta finalizada");
+    }
+
+    const medicamentoResultado = await cliente.query(
+      "SELECT id FROM medicamento WHERE id = $1",
+      [datos.medicamento_id]
+    );
+
+    if (medicamentoResultado.rowCount === 0) {
+      throw new Error("El medicamento no existe");
+    }
+
+    await cliente.query(
+      `INSERT INTO detalle_receta
+         (receta_id, medicamento_id, cantidad, dosis, indicaciones)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        datos.receta_id,
+        datos.medicamento_id,
+        datos.cantidad,
+        datos.dosis.trim(),
+        datos.indicaciones.trim()
+      ]
+    );
+
+    await cliente.query(
+      "UPDATE receta_medica SET actualizado_en = NOW() WHERE id = $1",
+      [datos.receta_id]
+    );
+
+    await cliente.query("COMMIT");
+  } catch (error) {
+    await cliente.query("ROLLBACK");
+    throw error;
+  } finally {
+    cliente.release();
+  }
+
+  const recetaActualizada = await obtenerRecetaPorId(datos.receta_id);
+
+  if (!recetaActualizada) {
+    throw new Error("No fue posible recuperar la receta actualizada");
+  }
+
+  return recetaActualizada;
 };
 
 // ==========================================
-// 11. CAMBIAR ESTADO DE UNA RECETA
+// 7. CAMBIAR ESTADO DE UNA RECETA
 // ==========================================
 
-export const cambiarEstadoReceta = (
+export const cambiarEstadoReceta = async (
   recetaId: number,
   nuevoEstado: EstadoReceta
-): RecetaMedica => {
-  const receta = recetas.get(recetaId);
-
-  if (!receta) {
-    throw new Error("La receta médica no existe");
-  }
-
+): Promise<RecetaMedica> => {
   if (nuevoEstado === "Despachada") {
     throw new Error(
       "Para despachar una receta debes utilizar despacharReceta"
     );
   }
 
-  const estadosPermitidos = transicionesPermitidas[receta.estado];
+  const resultado = await pool.query(
+    `UPDATE receta_medica
+     SET estado = $1
+     WHERE id = $2
+     RETURNING id`,
+    [nuevoEstado, recetaId]
+  );
 
-  if (!estadosPermitidos.includes(nuevoEstado)) {
-    throw new Error(
-      `No se permite cambiar de ${receta.estado} a ${nuevoEstado}`
-    );
-  }
-
-  registrarCambioEstado(receta, nuevoEstado, fechaActual());
-
-  return receta;
-};
-
-// ==========================================
-// 12. DESPACHAR UNA RECETA
-// ==========================================
-
-export const despacharReceta = (
-  recetaId: number,
-  farmaceuticoId: string
-): RecetaMedica => {
-  const receta = recetas.get(recetaId);
-
-  if (!receta) {
+  if (resultado.rowCount === 0) {
     throw new Error("La receta médica no existe");
   }
 
-  if (receta.estado !== "En Proceso") {
-    throw new Error(
-      "Solo se pueden despachar recetas que estén En Proceso"
-    );
+  const recetaActualizada = await obtenerRecetaPorId(recetaId);
+
+  if (!recetaActualizada) {
+    throw new Error("No fue posible recuperar la receta actualizada");
   }
 
+  return recetaActualizada;
+};
+
+// ==========================================
+// 8. DESPACHAR UNA RECETA
+// ==========================================
+
+export const despacharReceta = async (
+  recetaId: number,
+  farmaceuticoId: string
+): Promise<RecetaMedica> => {
   if (!farmaceuticoId.trim()) {
     throw new Error("El identificador del farmacéutico es obligatorio");
   }
 
-  if (receta.detalles.length === 0) {
-    throw new Error("No se puede despachar una receta sin medicamentos");
-  }
+  const cliente = await pool.connect();
 
-  if (receta.fecha_vigencia.slice(0, 10) < fechaHoy()) {
-    throw new Error("No se puede despachar una receta vencida");
-  }
+  try {
+    await cliente.query("BEGIN");
 
-  // Agrupar cantidades por medicamento.
-  // Esto evita errores si un medicamento aparece varias veces
-  // en los detalles de la misma receta.
-
-  const cantidadesNecesarias = new Map<number, number>();
-
-  for (const detalle of receta.detalles) {
-    const cantidadActual =
-      cantidadesNecesarias.get(detalle.medicamento_id) ?? 0;
-
-    cantidadesNecesarias.set(
-      detalle.medicamento_id,
-      cantidadActual + detalle.cantidad
+    const resultado = await cliente.query<RecetaRow>(
+      `SELECT id, codigo_qr, medico_id, paciente_id, farmaceutico_id,
+              estado, fecha_emision, fecha_vigencia, fecha_despacho,
+              observaciones, actualizado_en
+       FROM receta_medica
+       WHERE id = $1
+       FOR UPDATE`,
+      [recetaId]
     );
-  }
 
-  // PRIMERA FASE: comprobar todo el inventario.
-  // Todavía no se modifica ninguna existencia.
+    const receta = resultado.rows[0];
 
-  for (const [medicamentoId, cantidadNecesaria] of cantidadesNecesarias) {
-    const medicamento = medicamentos.get(medicamentoId);
-
-    if (!medicamento) {
-      throw new Error(`El medicamento ${medicamentoId} no existe`);
+    if (!receta) {
+      throw new Error("La receta médica no existe");
     }
 
-    if (medicamento.stock < cantidadNecesaria) {
+    if (receta.estado !== "En Proceso") {
       throw new Error(
-        `Stock insuficiente de ${medicamento.nombre}. ` +
-        `Disponible: ${medicamento.stock}. ` +
-        `Solicitado: ${cantidadNecesaria}`
+        "Solo se pueden despachar recetas que estén En Proceso"
       );
     }
-  }
 
-  // SEGUNDA FASE: aplicar los descuentos.
-  // Solo se llega aquí si todos los medicamentos tienen stock.
+    const detalles = await cliente.query(
+      `SELECT id
+       FROM detalle_receta
+       WHERE receta_id = $1`,
+      [recetaId]
+    );
 
-  const fecha = fechaActual();
-
-  for (const [medicamentoId, cantidadNecesaria] of cantidadesNecesarias) {
-    const medicamento = medicamentos.get(medicamentoId);
-
-    if (!medicamento) {
-      throw new Error(`El medicamento ${medicamentoId} no existe`);
+    if (detalles.rowCount === 0) {
+      throw new Error("No se puede despachar una receta sin medicamentos");
     }
 
-    medicamento.stock -= cantidadNecesaria;
+    const vigencia = String(receta.fecha_vigencia).slice(0, 10);
+    const hoy = new Date().toISOString().slice(0, 10);
 
-    movimientosInventario.push({
-      id: siguienteIdMovimiento++,
-      medicamento_id: medicamentoId,
-      receta_id: receta.id,
-      tipo: "SALIDA",
-      cantidad: cantidadNecesaria,
-      fecha_movimiento: fecha
-    });
+    if (vigencia < hoy) {
+      throw new Error("No se puede despachar una receta vencida");
+    }
+
+    // El trigger de PostgreSQL V4 gestiona automáticamente:
+    // - La validación del inventario.
+    // - El descuento del stock.
+    // - El registro de movimientos.
+    // - El historial de estados.
+    // - La fecha de despacho.
+
+    await cliente.query(
+      `UPDATE receta_medica
+       SET estado = 'Despachada',
+           farmaceutico_id = $1
+       WHERE id = $2`,
+      [farmaceuticoId, recetaId]
+    );
+
+    await cliente.query("COMMIT");
+  } catch (error) {
+    await cliente.query("ROLLBACK");
+    throw error;
+  } finally {
+    cliente.release();
   }
 
-  // Registrar farmacéutico y fecha de despacho.
+  const recetaDespachada = await obtenerRecetaPorId(recetaId);
 
-  receta.farmaceutico_id = farmaceuticoId;
-  receta.fecha_despacho = fecha;
+  if (!recetaDespachada) {
+    throw new Error("No fue posible recuperar la receta despachada");
+  }
 
-  registrarCambioEstado(receta, "Despachada", fecha);
-
-  return receta;
+  return recetaDespachada;
 };
 
 // ==========================================
-// 13. CONSULTAR INVENTARIO
+// 9. CONSULTAR INVENTARIO
 // ==========================================
 
-export const obtenerInventario = (): Medicamento[] => {
-  return Array.from(medicamentos.values());
-};
-
-// ==========================================
-// 14. CONSULTAR HISTORIAL DE ESTADOS
-// ==========================================
-
-export const obtenerHistorialEstados = (
-  recetaId: number
-): HistorialEstadoReceta[] => {
-  return historialEstados.filter(
-    (registro) => registro.receta_id === recetaId
+export const obtenerInventario = async (): Promise<Medicamento[]> => {
+  const resultado = await pool.query<Medicamento>(
+    `SELECT id, codigo, nombre, presentacion, stock, stock_minimo
+     FROM medicamento
+     ORDER BY id`
   );
+
+  return resultado.rows.map((medicamento) => ({
+    ...medicamento,
+    id: Number(medicamento.id),
+    stock: Number(medicamento.stock),
+    stock_minimo: Number(medicamento.stock_minimo)
+  }));
 };
 
 // ==========================================
-// 15. CONSULTAR MOVIMIENTOS DE INVENTARIO
+// 10. CONSULTAR HISTORIAL DE ESTADOS
 // ==========================================
 
-export const obtenerMovimientosInventario = (
+export const obtenerHistorialEstados = async (
   recetaId: number
-): MovimientoInventario[] => {
-  return movimientosInventario.filter(
-    (movimiento) => movimiento.receta_id === recetaId
+): Promise<HistorialEstadoReceta[]> => {
+  const resultado = await pool.query<HistorialEstadoReceta>(
+    `SELECT id, receta_id, estado_anterior, estado_nuevo, cambiado_en
+     FROM historial_estado_receta
+     WHERE receta_id = $1
+     ORDER BY cambiado_en, id`,
+    [recetaId]
   );
+
+  return resultado.rows.map((registro) => ({
+    ...registro,
+    id: Number(registro.id),
+    receta_id: Number(registro.receta_id),
+    cambiado_en: convertirFecha(registro.cambiado_en)
+  }));
+};
+
+// ==========================================
+// 11. CONSULTAR MOVIMIENTOS DE INVENTARIO
+// ==========================================
+
+export const obtenerMovimientosInventario = async (
+  recetaId: number
+): Promise<MovimientoInventario[]> => {
+  const resultado = await pool.query<MovimientoInventario>(
+    `SELECT id, medicamento_id, receta_id, tipo, cantidad,
+            stock_resultante, fecha
+     FROM movimiento_inventario
+     WHERE receta_id = $1
+     ORDER BY fecha, id`,
+    [recetaId]
+  );
+
+  return resultado.rows.map((movimiento) => ({
+    ...movimiento,
+    id: Number(movimiento.id),
+    medicamento_id: Number(movimiento.medicamento_id),
+    receta_id: movimiento.receta_id === null
+      ? null
+      : Number(movimiento.receta_id),
+    cantidad: Number(movimiento.cantidad),
+    stock_resultante: Number(movimiento.stock_resultante),
+    fecha: convertirFecha(movimiento.fecha)
+  }));
 };

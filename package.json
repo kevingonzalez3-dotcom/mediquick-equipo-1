@@ -8,7 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "tsx --test tests/receta.test.ts tests/receta.api.test.ts",
+    "test": "cross-env NODE_ENV=test tsx --test tests/receta.test.ts tests/receta.api.test.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
@@ -28,6 +28,7 @@
     "cors": "^2.8.6",
     "dotenv": "^18.0.10",
     "express": "^5.3.0",
+    "pg": "^8.23.1",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
@@ -35,8 +36,10 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
     "@types/qrcode": "^1.5.6",
     "@types/supertest": "^7.2.1",
+    "cross-env": "^10.1.0",
     "eslint": "^9.39.5",
     "globals": "^17.14.0",
     "supertest": "^7.3.2",
